@@ -2,6 +2,7 @@
 
 Native TypeScript ESM remote control for Fire TV, using the LAN remote protocol rather than ADB.
 Requires Node.js 20 or later; development and CI use Node.js 22 and Yarn 4.9.2.
+The repository vendors Yarn 4.9.2 so GitHub's cache initializer uses the pinned version before Corepack is enabled, matching Google TV.
 
 **Hardware validation is partial.**
 The real receiver accepted pairing and navigation requests, and the compiled client/CLI worked through a temporary native TCP relay.
