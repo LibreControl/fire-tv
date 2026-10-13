@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+.yarn/*
+!.yarn/releases/
+!.yarn/releases/yarn-*.cjs
+.librecontrol/
+.env
+.DS_Store

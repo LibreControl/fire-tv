@@ -1,0 +1,16 @@
+{
+  "provenance": "SYNTHETIC fixture based on public community Fire TV protocol documentation. NOT a hardware capture; NOT captured from the user's Fire TV Stick 4K Plus.",
+  "source": "https://github.com/zane-programs/reversing-with-claude-code/blob/master/fire-tv/PROTOCOL.md",
+  "pin": "4826",
+  "token": "synthetic-secret-client-token-4826",
+  "status": {
+    "osVersion": "synthetic-fire-os-8",
+    "platformType": "android",
+    "turnstileVersion": "synthetic-0.1"
+  },
+  "properties": {
+    "volumeSupport": "NotSupported",
+    "powerSupport": "NotSupported",
+    "internalIntentSupport": "Supported"
+  }
+}
