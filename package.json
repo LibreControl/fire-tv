@@ -1,6 +1,6 @@
 {
   "name": "@librecontrol/fire-tv",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Native Fire TV remote adapter for the LibreControl universal device control stack.",
   "type": "module",
   "packageManager": "yarn@4.9.2",
