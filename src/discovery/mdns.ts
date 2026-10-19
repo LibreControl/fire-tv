@@ -1,6 +1,7 @@
 import dgram from "node:dgram";
 import os from "node:os";
 import type { DiscoverFireTvOptions, FireTvDiscoveryResult } from "../types.js";
+import { discoverSsdp } from "./ssdp.js";
 
 const SERVICE = "_amzn-fireTv._tcp.local.";
 const MDNS_ADDRESS = "224.0.0.251";
@@ -34,17 +35,57 @@ export async function discoverFireTv(
 ): Promise<FireTvDiscoveryResult[]> {
   const timeoutMs = options.timeoutMs ?? 5000;
   const port = options.mdnsPort ?? MDNS_PORT;
+  const ssdpPort = options.ssdpPort ?? 1900;
   if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > 2147483647) {
     throw new Error("Invalid Fire TV discovery timeout");
   }
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("Invalid Fire TV mDNS port");
   }
-  const interfaces = options.networkInterfaces ?? localNetworkAddresses();
+  if (!Number.isInteger(ssdpPort) || ssdpPort < 1 || ssdpPort > 65535) {
+    throw new Error("Invalid Fire TV SSDP port");
+  }
+  const interfaces = [...new Set(options.networkInterfaces ?? localNetworkAddresses())];
+  const deadline = performance.now() + timeoutMs;
+  const [mdns, ssdp] = await Promise.all([
+    discoverMdns(options, interfaces, port, deadline),
+    discoverSsdp(options, interfaces, ssdpPort, deadline),
+  ]);
+  const endpoints = new Map<string, FireTvDiscoveryResult>();
+  // Prefer descriptor-confirmed names and stable UUIDs when both protocols see a receiver.
+  for (const result of [...mdns, ...ssdp]) {
+    const key = `${result.host}:${result.port}`;
+    const previous = endpoints.get(key);
+    endpoints.set(
+      key,
+      previous
+        ? {
+            ...previous,
+            ...result,
+            addresses: [...new Set([...previous.addresses, ...result.addresses])],
+            txt: { ...previous.txt, ...result.txt },
+          }
+        : result,
+    );
+  }
+  return [...endpoints.values()];
+}
+
+async function discoverMdns(
+  options: DiscoverFireTvOptions,
+  interfaces: string[],
+  port: number,
+  deadline: number,
+): Promise<FireTvDiscoveryResult[]> {
   const records = (
     await Promise.all(
-      (interfaces.length ? [...new Set(interfaces)] : [undefined]).map((address) =>
-        discoverOnInterface(address, options.mdnsAddress ?? MDNS_ADDRESS, port, timeoutMs),
+      (interfaces.length ? interfaces : [undefined]).map((address) =>
+        discoverOnInterface(
+          address,
+          options.mdnsAddress ?? MDNS_ADDRESS,
+          port,
+          Math.max(0, deadline - performance.now()),
+        ),
       ),
     )
   ).flat();

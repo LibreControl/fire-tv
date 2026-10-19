@@ -23,7 +23,7 @@ describe("actual voice CLI subprocess", () => {
     await cli.command("/voice wav tests/fixtures/open-youtube.wav", "voice streamed");
     expect(performance.now() - start).toBeGreaterThanOrEqual(1150);
     expect(Buffer.concat(voice.sessions[0]!.pcm)).toEqual(wav.subarray(4096, 45056));
-    expect(remote.state.voiceTransitions).toEqual(["start", "wss", "close", "stop"]);
+    expect(voice.sessions[0]!.closed).toBe(true);
     expect(remote.state.recording).toBe(false);
     expect(await cli.finish()).toEqual({ code: 0, signal: null });
     expect(cli.output).not.toContain("error:");
@@ -80,7 +80,6 @@ describe("actual voice CLI subprocess", () => {
       }
       expect(remote.state.recording).toBe(false);
       expect(voice.sessions[0]!.closed).toBe(true);
-      expect(remote.state.voiceTransitions).toEqual(["start", "wss", "close", "stop"]);
     },
     12000,
   );

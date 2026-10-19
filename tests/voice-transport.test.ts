@@ -40,6 +40,23 @@ async function setup(pauseMs: number, timeoutMs = 1000) {
 }
 
 describe("native TLS voice transport under socket pressure", () => {
+  it("shares an in-flight close and rejects PCM before the receiver acknowledges it", async () => {
+    const { socket, controller, voice } = await setup(0);
+    const session = voice.sessions[0]!;
+    session.pause();
+    const closing = socket.close();
+    expect(socket.close()).toBe(closing);
+    await expect(socket.writePcm(Buffer.from([1, 2]), controller.signal)).rejects.toMatchObject({
+      code: "cancelled",
+    });
+    expect(session.closeAcknowledged).toBe(false);
+    session.resume();
+    await closing;
+    expect(session.closeAcknowledged).toBe(true);
+    expect(session.pcm).toEqual([]);
+    expect(session.errors).toEqual([]);
+  });
+
   it("delivers ordered masked bytes after receiver pauses beyond TCP buffering", async () => {
     const { socket, controller, voice } = await setup(250);
     const payload = Buffer.alloc(65534);

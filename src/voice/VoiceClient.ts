@@ -157,20 +157,20 @@ export class VoiceClient {
       } catch {
         /* Recording may still have started remotely. */
       }
-      let closeError: unknown;
-      try {
-        await session.socket?.close();
-      } catch (error) {
-        closeError = error;
-      }
-      try {
-        await this.options.command(
+      // Initiate the close handshake before stop, but do not await its acknowledgement:
+      // some receivers only acknowledge the WebSocket close after the HTTP stop.
+      // Both operations must settle before releasing ownership or allowing a retry.
+      const [closed, stopped] = await Promise.allSettled([
+        session.socket?.close(),
+        this.options.command(
           "stop",
           new AbortController().signal,
           session.token,
           session.generation,
-        );
-      } catch (error) {
+        ),
+      ]);
+      if (stopped.status === "rejected") {
+        const error: unknown = stopped.reason;
         if (
           error instanceof FireTvError &&
           (error.statusCode === 401 || error.statusCode === 403)
@@ -184,7 +184,7 @@ export class VoiceClient {
         throw error;
       }
       if (this.session === session) this.session = undefined;
-      if (closeError) throw closeError;
+      if (closed.status === "rejected") throw closed.reason;
     })();
     return session.cleanup;
   }

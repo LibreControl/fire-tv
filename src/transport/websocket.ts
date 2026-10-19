@@ -325,9 +325,16 @@ export class VoiceSocket {
       this.closeResolve = resolve;
       this.closeReject = reject;
       this.closeTimer = setTimeout(() => this.terminate(failure("timeout")), this.timeoutMs);
-      void this.writeFrame(8, Buffer.from([3, 232])).catch((error: FireTvError) =>
-        this.terminate(error),
-      );
+      void this.writeFrame(8, Buffer.from([3, 232]))
+        .then(() => {
+          // Fire TV needs the recording's write-side EOF as well as the close
+          // frame. Flush the frame first, then half-close TLS while continuing
+          // to read the peer's acknowledgement under the existing deadline.
+          if (!this.ended) this.socket.end();
+        })
+        .catch((error: unknown) =>
+          this.terminate(error instanceof FireTvError ? error : failure("network")),
+        );
     });
     return this.closePromise;
   }

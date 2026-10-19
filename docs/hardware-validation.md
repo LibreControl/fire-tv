@@ -2,7 +2,7 @@
 
 ## Current status
 
-**Partially validated on user hardware on 2026-10-13.**
+**Partially validated on user hardware on 2026-10-13 and 2026-10-19.**
 Intended target: AFTMA08C15, Fire TV Stick 4K Plus (2025), Fire OS 8 / Android 11 per [Amazon's specifications](https://developer.amazon.com/docs/device-specs/device-specifications-fire-tv-streaming-media-player.html).
 Do not substitute the Vega-based 4K Select.
 The synthetic fixture suite is independent protocol/transport verification, not a device certification or a captured firmware transcript.
@@ -14,7 +14,7 @@ Different firmware versions can expose different transport, keyboard, or service
 ### Observed hardware results
 
 The user identified the receiver as a Fire TV Stick 4K Plus.
-Its model identifier was not independently read from the receiver.
+Its DIAL device description independently reported model AFTMA08C15 on 2026-10-19.
 Authenticated status reported `platformType: android`, `osVersion: 0032548774788`, and `turnstileVersion: 0.1.147068`.
 Properties reported `powerSupport: NotSupported` and `volumeSupport: NotSupported`.
 The capability endpoint also reported `isVolumeControlsSupported: false` and `volumeCapabilityLevelOfSupport: NotSupported`.
@@ -28,7 +28,7 @@ The user described a monitor as the connected display; the API does not establis
 - The production TypeScript client connected to the real receiver through a temporary loopback-to-native-TCP relay.
   Home, right, left, up, down, menu, back, and home requests completed successfully.
   The user subsequently confirmed Home returned from YouTube to the Fire TV home screen and all four arrow directions changed the highlighted item.
-  Menu and back remain protocol-level acknowledgments only.
+  Menu and back were protocol-level acknowledgments only in that session.
 - Disconnect/reconnect with the saved credential succeeded through the relay.
   A command after disconnect was rejected locally.
 - The receiver reported a hidden keyboard with null mode.
@@ -45,7 +45,7 @@ The user described a monitor as the connected display; the API does not establis
 - The first owned-client voice attempt failed while connecting to the remote API, before voice start or audio streaming.
   Explicit DIAL reactivation then returned 201.
   The user stepped away and requested that further real-device verification be deferred.
-  No voice audio was sent in that attempt, and no Alexa response has been verified.
+  No voice audio was sent in that attempt; the later direct test below verified Alexa interpretation.
 
 ### Owned voice implementation readiness
 
@@ -57,13 +57,42 @@ Automated native HTTP/WSS fixtures verify byte fidelity, pacing under stalls, co
 Both compiled CLI acceptance scenarios passed, and the voice scenario also passed on Node 20.
 These are synthetic receiver checks, not evidence of an Alexa response on the user's stick.
 
-### Remaining hardware blockers
+### Direct hardware validation on 2026-10-19
 
-Direct Node socket requests to the receiver returned `EHOSTUNREACH`, while native `nc` and `curl` reached the same receiver.
-macOS Local Network permission is a suspected cause, not a confirmed diagnosis.
-Direct package-to-LAN connectivity is therefore not validated by the relay test.
-Native Bonjour did not show `_amzn-fireTv._tcp` advertisements before or after DIAL activation; manual addressing was required.
-Select, menu/back screen effects, active keyboard Unicode input, playback/seek behavior, Alexa interpretation, and credential-revocation handling remain unverified on the real receiver.
+In the earlier session, direct Node socket requests returned `EHOSTUNREACH`, while native `nc` and `curl` reached the receiver.
+macOS Local Network permission was suspected but not confirmed.
+The direct discovery and authenticated command results below supersede that earlier connectivity blocker.
+Native Bonjour did not show `_amzn-fireTv._tcp` advertisements before or after DIAL activation on 2026-10-13; manual addressing was required then.
+On 2026-10-19, with the stick powered and its TV off, SSDP/DIAL discovery found its device-description endpoint without a supplied IP.
+The description identified manufacturer Amazon and model AFTMA08C15.
+The updated production `discoverFireTv()` returned the receiver's friendly name, UUID, current address, and remote port 8080.
+The saved previous address was stale; the newly discovered address's remote port was not reachable in a separate native probe.
+Automatic discovery is verified for this setup; remote-service connectivity and TV wake are separate and were not established by discovery.
+After explicit DIAL activation, the saved credential authenticated successfully at the discovered address without a TCP relay.
+A native Home request was accepted, and the user confirmed that it turned on the connected TV.
+With the stick connected to the TV, properties reported `powerSupport: MaybeSupported` and `volumeSupport: MaybeSupported`, unlike the earlier monitor setup.
+Those flags alone do not establish discrete power, volume, or mute endpoints.
+The user confirmed all four directional controls, Back, and Menu on the Fire TV home screen.
+Menu's effect inside Netflix was not established; its home-screen options appeared after Home and an eight-second wait.
+Select opened the playback path, and the user confirmed that Play/Pause paused the movie.
+A forward scan with `durationInSeconds: "5"` was accepted but caused continuing forward movement, not a verified five-second jump.
+A backward scan returned HTTP 400.
+The user confirmed that a subsequent Play/Pause stopped forward scanning and resumed normal movie playback.
+The user confirmed that `Matrix` appeared in native Fire TV search after the API reported `visible` / `keyboard`.
+Netflix search reported `hidden` / null despite user-visible focus; the client refused text input there.
+The owned voice implementation started recording and streamed the included sample; the user confirmed that YouTube opened.
+The initial implementation timed out waiting for WebSocket close, despite a successful HTTP stop.
+Concurrent HTTP stop alone did not resolve the real-device timeout.
+Ending the TLS write side after flushing the WebSocket close frame resolved it.
+With both changes in the production client, direct voice streaming and stop completed successfully; stop took 85 ms in the final hardware smoke.
+The same smoke sent `sendKey("powerToggle")` successfully through the public library.
+The current capability endpoint reported `isVolumeControlsSupported: false`, while power and volume levels remained `MaybeSupported`.
+An empty-body `POST /v1/FireTV?action=power` returned HTTP 200, and the user confirmed that the TV turned off.
+This is exposed as `powerToggle`, not a state-aware or discrete power-off operation.
+No verified direct LAN volume-up, volume-down, or mute request was identified.
+A synthesized Alexa volume-up request streamed successfully but produced no observed volume change; the user rejected voice as a replacement for direct volume buttons.
+Direct volume and mute controls are unavailable through the current adapter.
+Active keyboard Unicode input, reverse seeking, and credential-revocation handling remain unverified on the real receiver.
 The unauthenticated HTTPS status request returned 403 rather than the older community documentation's 401.
 No authentication-failure transition was tested by revoking the user's valid pairing.
 
@@ -80,9 +109,10 @@ No authentication-failure transition was tested by revoking the user's valid pai
 ## Validation sequence
 
 1. Start `yarn cli`, run `/scan`, then `/devices`.
-   Record whether discovery finds the receiver and which address/port it advertises.
+   Record which receivers are discovered and their remote addresses/ports.
+   Discovery searches mDNS and SSDP/DIAL without activating the remote service.
    A discovery miss does not establish that HTTP control is absent; multicast can be filtered.
-   Use `/add <address> [name]` for the identified receiver if needed.
+   Use `/add <address> [name]` only if automatic discovery cannot find the identified receiver.
 2. Confirm bare hosts select HTTPS.
    Use `/pair <id>`.
    The receiver should visibly display a PIN.
@@ -91,7 +121,9 @@ No authentication-failure transition was tested by revoking the user's valid pai
    Optionally enter one incorrect four-digit code first, observe rejection, then enter the correct one without opening another session.
 3. Run `/connect <id>`, then `/status` and `/properties`.
    Record only non-secret status fields and reported support flags.
-   Properties do not prove a volume or power endpoint exists; no such command is offered.
+   Properties alone do not establish controllable endpoints; volume/mute controls are not exposed.
+   Test `/power-toggle` separately when a TV power change is safe, and confirm the actual effect.
+   Do not repeat or automatically retry a power toggle merely because the current TV state is unknown.
 4. On a safe home-screen view, test `/up`, `/down`, `/left`, `/right`, `/select`, `/back`, `/home`, `/menu` one at a time.
    Confirm a visible navigation effect and no stuck key.
    If the receiver behaves unexpectedly, stop and use the physical remote.

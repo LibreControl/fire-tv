@@ -28,7 +28,8 @@ export interface FireTvPairingSession {
 }
 
 export type FireTvHeldKeyName = "up" | "down" | "left" | "right" | "select";
-export type FireTvKeyName = FireTvHeldKeyName | "back" | "home" | "menu" | "playPause";
+export type FireTvKeyName =
+  FireTvHeldKeyName | "back" | "home" | "menu" | "playPause" | "powerToggle";
 
 export interface FireTvStatus {
   osVersion: string;
@@ -63,6 +64,8 @@ export interface DiscoverFireTvOptions {
   timeoutMs?: number;
   mdnsAddress?: string;
   mdnsPort?: number;
+  ssdpAddress?: string;
+  ssdpPort?: number;
   /** Local IPv4 addresses on which to bind discovery sockets. */
   networkInterfaces?: string[];
 }

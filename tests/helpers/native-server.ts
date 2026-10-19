@@ -43,6 +43,8 @@ export async function startNativeServer(options: { tls?: boolean } = {}) {
     screen: "home",
     menuOpen: false,
     playing: false,
+    // Synthetic display power only; this does not certify a receiver's CEC behavior.
+    displayPowered: true,
     position: 60,
     launches: 0,
     effects: [] as string[],
@@ -184,7 +186,10 @@ export async function startNativeServer(options: { tls?: boolean } = {}) {
         state.screen = "home";
         state.keyboardActive = false;
       } else if (raw === "" && action === "menu") state.menuOpen = !state.menuOpen;
-      else return respond(res, 400);
+      else if (raw === "" && action === "power") {
+        state.displayPowered = !state.displayPowered;
+        state.effects.push(`power:${state.displayPowered ? "on" : "off"}`);
+      } else return respond(res, 400);
     } else if (url.pathname === "/v1/FireTV/keyboard") {
       if (!state.keyboardActive || typeof body.text !== "string") return respond(res, 400);
       // Fixture-owned insert-at-end model, not hardware-proven cursor/IME semantics.

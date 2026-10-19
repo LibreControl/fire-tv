@@ -90,6 +90,36 @@ describe("real Fire TV CLI subprocess", () => {
     }
   }, 15000);
 
+  it("toggles visible synthetic power twice and rejects disconnected or invalid-auth presses", async () => {
+    const { directory, server } = await setup();
+    const process = cli(directory);
+    await process.waitFor("fire-tv>");
+    await process.command(`/add http://127.0.0.1:${server.config.port} Synthetic`, "added [1]");
+    await process.command("/pair 1", "enter the PIN");
+    await process.command(`/code ${server.fixture.pin}`, "paired Synthetic");
+    await process.command("/connect 1", "connected Synthetic");
+    expect(server.state.displayPowered).toBe(true);
+    await process.command("/power-toggle", "sent power-toggle");
+    expect(server.state.displayPowered).toBe(false);
+    await process.command("/power-toggle", "sent power-toggle");
+    expect(server.state.displayPowered).toBe(true);
+    expect(server.state.effects).toEqual(["power:off", "power:on"]);
+    await process.command("/disconnect", "disconnected");
+    const count = server.requests.length;
+    await process.command("/power-toggle", "error:");
+    expect(server.requests.length).toBe(count);
+    expect(server.state.displayPowered).toBe(true);
+    await process.command("/connect 1", "connected Synthetic");
+    server.state.tokenValid = false;
+    await process.command("/power-toggle", "error:");
+    const rejectedCount = server.requests.length;
+    await process.command("/power-toggle", "error:");
+    expect(server.requests.length).toBe(rejectedCount);
+    expect(server.state.displayPowered).toBe(true);
+    expect(server.state.effects).toEqual(["power:off", "power:on"]);
+    expect(await process.finish("/quit")).toEqual({ code: 0, signal: null });
+  }, 15000);
+
   it("redacts secrets from receiver errors, rejects unsupported commands and allows recovery", async () => {
     const { directory, server } = await setup();
     const process = cli(directory);
@@ -103,7 +133,7 @@ describe("real Fire TV CLI subprocess", () => {
       status: 500,
       body: `${server.fixture.token} ${server.fixture.pin}`,
     });
-    process.child.stdin.write("/status\n/power\n/volume\n/voice\n/right\n");
+    process.child.stdin.write("/status\n/power\n/power-on\n/power-off\n/volume\n/voice\n/right\n");
     await process.command("/status", "synthetic-fire-os-8");
     server.faults.push({
       path: "/v1/FireTV/properties",
@@ -115,6 +145,7 @@ describe("real Fire TV CLI subprocess", () => {
     });
     await process.command("/properties", "NotSupported");
     expect(server.state.x).toBe(1);
+    expect(server.state.displayPowered).toBe(true);
     expect(process.output).not.toContain(server.fixture.token);
     expect(process.output).not.toContain(server.fixture.pin);
     expect(process.output.toLowerCase()).toMatch(/unknown|unsupported/);

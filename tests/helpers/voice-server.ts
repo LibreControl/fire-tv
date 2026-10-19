@@ -10,6 +10,8 @@ export interface VoiceFault {
   closeAfterBytes?: number;
   pauseMs?: number;
   ignoreClose?: boolean;
+  closeAfterStop?: boolean;
+  closeAfterEof?: boolean;
   onFirstAudio?: () => void;
 }
 // Independent RFC6455 receiver: never imports the production client/codec.
@@ -17,6 +19,8 @@ interface VoiceSession {
   pcm: Buffer[];
   times: number[];
   closed: boolean;
+  closeAcknowledged: boolean;
+  receivedEof: boolean;
   pong: Buffer[];
   errors: string[];
   pause(): void;
@@ -58,6 +62,10 @@ export async function startVoiceServer(remote: NativeServer) {
   server.on("upgrade", (req, socket, head) => {
     socket.on("error", () => {});
     const fault = faults.shift() ?? {};
+    // Only shutdown-dependency faults retain their response side after EOF.
+    // Normal receivers must also finish connections aborted mid-frame, where
+    // no complete WS close frame remains for the parser to acknowledge.
+    socket.allowHalfOpen = !!(fault.closeAfterStop || fault.closeAfterEof || fault.ignoreClose);
     if (
       req.url !== "/" ||
       req.method !== "GET" ||
@@ -88,10 +96,15 @@ export async function startVoiceServer(remote: NativeServer) {
         `Sec-WebSocket-Accept: ${fault.handshake === "accept" ? "incorrect" : accept}\r\n\r\n`,
     );
     remote.state.voiceTransitions.push("wss");
+    const stopCount =
+      remote.requests.filter((request) => request.path === "/v1/FireTV/voiceCommand?action=stop")
+        .length + 1;
     const session: VoiceSession = {
       pcm: [],
       times: [],
       closed: false,
+      closeAcknowledged: false,
+      receivedEof: false,
       pong: [],
       errors: [],
       pause: () => socket.pause(),
@@ -118,6 +131,9 @@ export async function startVoiceServer(remote: NativeServer) {
     sessions.push(session);
     let pending = Buffer.from(head);
     let bytes = 0;
+    socket.on("end", () => {
+      session.receivedEof = true;
+    });
     socket.on("close", () => {
       session.closed = true;
     });
@@ -173,7 +189,27 @@ export async function startVoiceServer(remote: NativeServer) {
         } else if (opcode === 8) {
           remote.state.voiceTransitions.push("close");
           session.closed = true;
-          if (!fault.ignoreClose) socket.end(frame(8, payload));
+          if (!fault.ignoreClose) {
+            const acknowledge = () => {
+              if (socket.destroyed) return;
+              session.closeAcknowledged = true;
+              socket.end(frame(8, payload));
+            };
+            const afterEof = () => {
+              if (fault.closeAfterEof && !session.receivedEof) socket.once("end", acknowledge);
+              else acknowledge();
+            };
+            if (fault.closeAfterStop) {
+              // Model receivers whose WebSocket shutdown depends on the HTTP control
+              // channel. Never acknowledge early merely because a timer elapsed.
+              void remote
+                .waitForRequest("/v1/FireTV/voiceCommand?action=stop", stopCount)
+                .then(afterEof, () => {
+                  session.errors.push("HTTP stop never arrived before close acknowledgement");
+                  socket.destroy();
+                });
+            } else afterEof();
+          }
         } else if (opcode === 9) socket.write(frame(10, payload));
         else if (opcode === 10) session.pong.push(payload);
         else {

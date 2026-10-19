@@ -25,6 +25,9 @@ try {
   await first.command("/select", "sent select");
   await first.command("/text Smoke café 🦊", "sent text");
   await first.command("/playpause", "sent playpause");
+  assert.equal(server.state.displayPowered, true);
+  await first.command("/power-toggle", "sent power-toggle");
+  assert.equal(server.state.displayPowered, false);
   await first.command("/scan-forward 9", "sent scan-forward");
   await first.command("/status", "synthetic-fire-os-8");
   assert.equal(server.state.x, 1);
@@ -52,6 +55,12 @@ try {
   await second.command("/launch 1", "launched remote");
   await second.command("/left", "sent left");
   await second.command("/playpause", "sent playpause");
+  await second.command("/power-toggle", "sent power-toggle");
+  assert.equal(server.state.displayPowered, true);
+  assert.deepEqual(
+    server.state.effects.filter((effect) => effect.startsWith("power:")),
+    ["power:off", "power:on"],
+  );
   await second.command("/scan-backward 4", "sent scan-backward");
   await second.command("/home", "sent home");
   assert.equal(server.state.x, 0);
@@ -76,12 +85,14 @@ try {
         persistedRestartWithoutPin: true,
         ownerOnlyCredentials: true,
         cleanQuitAndEof: true,
+        powerTransitions: server.state.effects.filter((effect) => effect.startsWith("power:")),
         state: {
           x: server.state.x,
           y: server.state.y,
           text: server.state.text,
           screen: server.state.screen,
           playing: server.state.playing,
+          displayPowered: server.state.displayPowered,
           position: server.state.position,
           launches: server.state.launches,
         },

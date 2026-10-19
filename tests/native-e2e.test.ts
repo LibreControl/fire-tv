@@ -91,6 +91,75 @@ describe("native adapter against synthetic Fire OS receiver", () => {
     expect(server.state.y).toBe(1);
   });
 
+  it("toggles synthetic display power off and on with successive presses", async () => {
+    const { server, device } = await setup();
+    await pair(device, server);
+    expect(server.state.displayPowered).toBe(true);
+    await device.sendKey("powerToggle");
+    expect(server.state.displayPowered).toBe(false);
+    await device.sendKey("powerToggle");
+    expect(server.state.displayPowered).toBe(true);
+    expect(server.state.effects).toEqual(["power:off", "power:on"]);
+  });
+
+  it.each([401, 403] as const)(
+    "does not toggle on HTTP %i and invalidates queued and subsequent presses",
+    async (status) => {
+      const { server, device } = await setup();
+      await pair(device, server);
+      server.state.tokenValid = false;
+      server.state.authFailureStatus = status;
+      const pending = expect(device.sendKey("powerToggle")).rejects.toMatchObject({
+        code: "http",
+        statusCode: status,
+      });
+      const queued = expect(device.sendKey("powerToggle")).rejects.toThrow();
+      await Promise.all([pending, queued]);
+      const count = server.requests.length;
+      await expect(device.sendKey("powerToggle")).rejects.toThrow();
+      await expect(device.connect()).rejects.toThrow();
+      expect(server.requests.length).toBe(count);
+      expect(
+        server.requests.filter((request) => request.path === "/v1/FireTV?action=power"),
+      ).toHaveLength(1);
+      expect(server.state.displayPowered).toBe(true);
+      expect(server.state.effects).toEqual([]);
+    },
+  );
+
+  it("cancels delayed and queued power presses on disconnect without toggling", async () => {
+    const { server, device } = await setup();
+    await pair(device, server);
+    server.faults.push({ path: "/v1/FireTV?action=power", delayMs: 200 });
+    const pending = expect(device.sendKey("powerToggle")).rejects.toThrow();
+    const queued = expect(device.sendKey("powerToggle")).rejects.toThrow();
+    await server.waitForRequest("/v1/FireTV?action=power");
+    await device.disconnect();
+    await Promise.all([pending, queued]);
+    const count = server.requests.length;
+    await expect(device.sendKey("powerToggle")).rejects.toThrow();
+    expect(server.requests.length).toBe(count);
+    expect(server.state.displayPowered).toBe(true);
+    expect(server.state.effects).toEqual([]);
+    await device.connect();
+    await device.sendKey("powerToggle");
+    expect(server.state.displayPowered).toBe(false);
+  });
+
+  it("never retries a failed power toggle and allows a later explicit press", async () => {
+    const { server, device } = await setup();
+    await pair(device, server);
+    server.faults.push({ path: "/v1/FireTV?action=power", status: 500 });
+    await expect(device.sendKey("powerToggle")).rejects.toMatchObject({ statusCode: 500 });
+    expect(server.state.displayPowered).toBe(true);
+    expect(
+      server.requests.filter((request) => request.path === "/v1/FireTV?action=power"),
+    ).toHaveLength(1);
+    await device.sendKey("powerToggle");
+    expect(server.state.displayPowered).toBe(false);
+    expect(server.state.effects).toEqual(["power:off"]);
+  });
+
   it("uses explicit HTTPS without downgrade and supports strict certificate rejection", async () => {
     const { server, device } = await setup({ tls: true, rejectUnauthorized: false });
     await pair(device, server);
@@ -139,20 +208,25 @@ describe("native adapter against synthetic Fire OS receiver", () => {
     await Promise.all([
       device.sendKey("up"),
       device.inputText("A🦊"),
+      device.sendKey("powerToggle"),
       device.sendKey("right"),
       device.inputText("漢B"),
+      device.sendKey("powerToggle"),
     ]);
     expect(server.state.effects).toEqual([
       "dpad_up:down",
       "dpad_up:up",
       "text:A🦊",
+      "power:off",
       "dpad_right:down",
       "dpad_right:up",
       "text:漢B",
+      "power:on",
     ]);
     expect(server.state.held).toBeNull();
     expect(server.state.text).toBe("A🦊漢B");
     expect([server.state.x, server.state.y]).toEqual([1, -1]);
+    expect(server.state.displayPowered).toBe(true);
   });
 
   it("recovers the command queue after a failed whole-string keyboard write", async () => {
@@ -246,11 +320,13 @@ describe("native adapter against synthetic Fire OS receiver", () => {
     expect(server.state.held).toBe("dpad_up");
     const count = server.requests.length;
     await expect(device.sendKey("right")).rejects.toThrow();
+    await expect(device.sendKey("powerToggle")).rejects.toThrow();
     await expect(device.sendKeyDown("left")).rejects.toThrow();
     await expect(device.sendKeyUp("right")).rejects.toThrow();
     await expect(device.inputText("blocked")).rejects.toThrow();
     expect(server.requests.length).toBe(count);
     expect(server.state.held).toBe("dpad_up");
+    expect(server.state.displayPowered).toBe(true);
     await device.sendKeyUp("up");
     await device.sendKey("right");
     expect(server.state.held).toBeNull();
@@ -334,7 +410,7 @@ describe("native adapter against synthetic Fire OS receiver", () => {
       ),
     ).toHaveLength(0);
     const count = server.requests.length;
-    for (const key of ["power", "volumeUp", "voice", "play", "pause"])
+    for (const key of ["power", "powerOn", "powerOff", "volumeUp", "voice", "play", "pause"])
       await expect(device.sendKey(key as FireTvKeyName)).rejects.toThrow();
     await expect(device.scan("forward", -1)).rejects.toThrow();
     expect(server.requests.length).toBe(count);

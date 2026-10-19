@@ -1,13 +1,14 @@
 # LibreControl Fire TV
 
 Native TypeScript ESM remote control for Fire TV, using the LAN remote protocol rather than ADB.
-Requires Node.js 20 or later; development and CI use Node.js 22 and Yarn 4.9.2.
+Requires Node.js 20 or later; CI tests Node.js 20 and 22, with development/builds on Node.js 22 and Yarn 4.9.2.
 The repository vendors Yarn 4.9.2 so GitHub's cache initializer uses the pinned version before Corepack is enabled, matching Google TV.
 
 **Hardware validation is partial.**
-The real receiver accepted pairing and navigation requests, and the compiled client/CLI worked through a temporary native TCP relay.
-The user confirmed Home, all four arrow directions, and ASCII text entry on the native search screen.
-Direct Node-to-LAN access, automatic discovery, Unicode text, playback behavior, and Alexa interpretation remain unverified.
+The real receiver accepted pairing, and the compiled client/CLI initially worked through a temporary native TCP relay.
+Later direct LAN testing confirmed automatic SSDP/DIAL discovery, saved-credential connection, navigation, native-search ASCII text, playback toggle, Alexa opening YouTube, and a power action turning off the connected TV.
+Home also woke the TV.
+Unicode text, reverse scan compatibility, and credential-revocation handling remain unverified on hardware.
 See the observed results and limitations in the [hardware validation guide](docs/hardware-validation.md).
 The intended receiver is the **Fire TV Stick 4K Plus (2025), AFTMA08C15, Fire OS 8 / Android 11**, as identified in [Amazon's device specifications](https://developer.amazon.com/docs/device-specs/device-specifications-fire-tv-streaming-media-player.html).
 This is not the Vega-based Fire TV Stick 4K Select.
@@ -87,7 +88,9 @@ Host is a hostname or IP address, not a URL; separate the scheme and ports in li
 `FireTvDevice` and `createFireTv(config)` expose readonly `host`, `id`, `name`, plus:
 
 - `startPairing()`, `connect()`, `disconnect()`.
-- `sendKey(key)` for `up`, `down`, `left`, `right`, `select`, `back`, `home`, `menu`, `playPause`.
+- `sendKey(key)` for `up`, `down`, `left`, `right`, `select`, `back`, `home`, `menu`, `playPause`, `powerToggle`.
+  `powerToggle` sends the observed native `power` action, not a discrete power-on or power-off operation.
+  TV state is not reported; callers must not automatically retry a toggle.
 - `sendKeyDown(key)` / `sendKeyUp(key)` for direction and select keys only.
 - `inputText(text)` sends the whole Unicode string in one `POST /v1/FireTV/keyboard` request after checking that the keyboard is active, including the hardware-observed `text` state.
   The receiver/app controls cursor and composition behavior; appending or replacing existing text is not guaranteed.
@@ -95,12 +98,14 @@ Host is a hostname or IP address, not a URL; separate the scheme and ports in li
 - `getProperties()` preserves receiver-reported properties.
   `volumeSupport` and `powerSupport` do not establish controllable command endpoints.
 - `getKeyboardState()` returns `{ state, mode, text }`, with nullable mode/text.
-- `scan("forward" | "backward", positiveSeconds)`.
+- `scan("forward" | "backward", positiveSeconds)` forwards a receiver scan request, not a guaranteed fixed-distance seek.
+  Forward scanning continued until Play/Pause on user hardware; backward scanning returned HTTP 400 and remains unverified.
 - `launchRemote()` explicitly activates `/apps/FireTVRemote` via HTTP DIAL; it needs no connected session and expects status 201.
   It is never an automatic recovery attempt.
 - `voiceStart()` starts authenticated recording and opens WSS; requires a connected session.
 - `voiceStreamPcm(samples)` streams nonempty, even-length raw mono 16000 Hz signed 16-bit little-endian PCM at real-time speed. It never starts recording implicitly.
-- `voiceStop()` interrupts streaming, closes WSS, then stops recording over authenticated HTTP(S). Idle stop and duplicate start reject.
+- `voiceStop()` interrupts streaming, initiates WSS shutdown and authenticated HTTP(S) stop concurrently, and awaits both.
+  Idle stop and duplicate start reject.
 - `extractVoiceWavPcm(bytes)` validates PCM WAV input and returns its audio data view, accounting for arbitrary padded metadata chunks.
 
 Commands serialize: complete down/up presses and text strings cannot interleave.
@@ -118,14 +123,16 @@ Start, socket, and streaming failures attempt recording cleanup without retrying
 Transient stop failures retain uncertain recording ownership for a later explicit stop/disconnect; remote recording state cannot be guaranteed after a network failure.
 Terminal authentication rejection releases the unusable local voice session rather than permanently blocking a new pairing.
 
-`discoverFireTv({ timeoutMs, mdnsAddress, mdnsPort, networkInterfaces })` browses `_amzn-fireTv._tcp.local.`.
-Defaults are native multicast, port 5353, a 5000 ms window, and local IPv4 interfaces.
-`networkInterfaces` contains **local IP addresses**, not interface names.
-Each socket binds an ephemeral port and asks for unicast replies.
-Results include `id`, `name`, `host`, `port`, `serviceName`, `addresses`, and `txt`.
-Compressed names, split datagrams and duplicate announcements are supported; malformed datagrams are ignored.
-An unavailable interface contributes no results.
-Discovery does not change transport selection: discovered devices still default to HTTPS.
+`discoverFireTv({ timeoutMs, mdnsAddress, mdnsPort, ssdpAddress, ssdpPort, networkInterfaces })` searches mDNS and SSDP/DIAL concurrently within one timeout (5000 ms by default).
+It browses `_amzn-fireTv._tcp.local.` at 224.0.0.251:5353 and searches for `urn:dial-multiscreen-org:service:dial:1` at 239.255.255.250:1900.
+`networkInterfaces` contains **local IPv4 addresses**, not interface names.
+Each UDP socket binds an ephemeral port and requests replies.
+Results include `id`, `name`, `host`, `port`, `serviceName`, `addresses`, and `txt`; matching host/remote-port endpoints are deduplicated.
+mDNS supplies its advertised remote port.
+DIAL candidates must have a device description identifying manufacturer Amazon and an AFT model; their remote port is 8080, not the description server's port.
+Description fetches are bounded, accept only numeric HTTP addresses matching the responder, and do not follow redirects.
+Discovery does not activate the remote service, choose a different remote transport, or prove remote-service reachability.
+Multicast filtering or an unavailable interface can still prevent discovery.
 
 ## CLI
 
@@ -145,7 +152,7 @@ Discovery does not change transport selection: discovered devices still default 
 The CLI does not echo PINs or tokens.
 Device IDs shown by `/devices` are CLI-local numeric IDs.
 
-Commands: `/help`, `/scan`, `/add <host> [name]`, `/devices`, `/pair <id>`, `/code <pin>`, `/connect <id>`, `/disconnect`, `/up`, `/down`, `/left`, `/right`, `/select`, `/home`, `/back`, `/menu`, `/playpause`, `/text <text>`, `/status`, `/properties`, `/keyboard`, `/scan-forward <seconds>`, `/scan-backward <seconds>`, `/launch <id>`, `/voice start`, `/voice stop`, `/voice pcm <path>`, `/voice wav <path>`, `/quit`.
+Commands: `/help`, `/scan`, `/add <host> [name]`, `/devices`, `/pair <id>`, `/code <pin>`, `/connect <id>`, `/disconnect`, `/up`, `/down`, `/left`, `/right`, `/select`, `/home`, `/back`, `/menu`, `/playpause`, `/power-toggle`, `/text <text>`, `/status`, `/properties`, `/keyboard`, `/scan-forward <seconds>`, `/scan-backward <seconds>`, `/launch <id>`, `/voice start`, `/voice stop`, `/voice pcm <path>`, `/voice wav <path>`, `/quit`.
 
 Bare hosts and `host:port` use HTTPS.
 `/add https://host:port` is explicit HTTPS; `/add http://host:port` permits an older HTTP receiver or local fixture without automatic downgrade.
@@ -172,7 +179,8 @@ No runtime converter is required.
 Its filename suggests the command, but we have not independently transcribed it.
 
 Independent synthetic fixtures can prove transport/authentication/audio fidelity and lifecycle behavior, not Alexa's recognition or an actual receiver response.
-No actual voice hardware result is claimed here; see the hardware guide for separately observed results.
+On user hardware, the sample opened YouTube; after the shutdown fix, direct voice streaming and stop completed without the earlier close timeout.
+See the hardware guide for the receiver-specific observations and remaining limits.
 
 ## Security and limits
 

@@ -38,6 +38,7 @@ const keys: Record<string, FireTvKeyName> = {
   back: "back",
   menu: "menu",
   playpause: "playPause",
+  "power-toggle": "powerToggle",
 };
 const secrets = new Set<string>();
 let redactionPattern: RegExp | undefined;
@@ -172,7 +173,7 @@ async function runCommand(line: string, state: PersistedState, session: Session)
     return;
   }
   if (command === "scan") {
-    print("scanning mDNS for Fire TV remote services...");
+    print("scanning mDNS and DIAL/SSDP for Fire TV receivers...");
     const found = await discoverFireTv();
     let added = 0;
     for (const discovered of found) {
@@ -376,6 +377,7 @@ function printHelp(): void {
 /disconnect                     Close the current session
 /launch <id>                    Explicitly activate the remote via DIAL
 /up /down /left /right /select /home /back /menu /playpause
+/power-toggle                   Toggle TV power (device/CEC dependent; not on/off)
 /text <text>                    Type into an active TV keyboard
 /voice start|stop                Start or stop Alexa audio input
 /voice pcm <path>                Stream mono 16000 Hz signed 16-bit LE PCM

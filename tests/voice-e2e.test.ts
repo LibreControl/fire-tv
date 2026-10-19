@@ -36,8 +36,19 @@ async function fixturePcm() {
   return wav.subarray(4096, 45056);
 }
 
+function expectVoiceTransitions(transitions: string[], sessions = 1) {
+  expect(transitions).toHaveLength(sessions * 4);
+  for (let index = 0; index < sessions; index++) {
+    const session = transitions.slice(index * 4, index * 4 + 4);
+    expect(session.slice(0, 2)).toEqual(["start", "wss"]);
+    // The two shutdown channels can arrive in either order, but both must finish
+    // before the next recording starts.
+    expect(session.slice(2).sort()).toEqual(["close", "stop"]);
+  }
+}
+
 describe("owned native Alexa voice against independent HTTP/WSS receiver", () => {
-  it("delivers exact Google-derived PCM at real-time pace and closes before authenticated stop", async () => {
+  it("delivers exact Google-derived PCM at real-time pace and completes authenticated shutdown", async () => {
     const { device, remote, voice } = await setup();
     const pcm = await fixturePcm();
     const start = performance.now();
@@ -52,13 +63,72 @@ describe("owned native Alexa voice against independent HTTP/WSS receiver", () =>
     expect(session.pong).toContainEqual(Buffer.from("alive"));
     expect(session.errors).toEqual([]);
     expect(voice.violations).toEqual([]);
-    expect(remote.state.voiceTransitions).toEqual(["start", "wss", "close", "stop"]);
+    expectVoiceTransitions(remote.state.voiceTransitions);
     expect(remote.state.recording).toBe(false);
     expect(session.closed).toBe(true);
     expect(
       remote.requests.filter((r) => r.path.includes("voiceCommand")).every((r) => r.body === ""),
     ).toBe(true);
   }, 8000);
+
+  it.each([
+    { dependency: "HTTP stop", closeAfterStop: true, closeAfterEof: false },
+    { dependency: "TLS EOF", closeAfterStop: false, closeAfterEof: true },
+    { dependency: "HTTP stop and TLS EOF", closeAfterStop: true, closeAfterEof: true },
+  ])(
+    "completes shutdown when WS close acknowledgement requires $dependency",
+    async ({ closeAfterStop, closeAfterEof }) => {
+      const { device, remote, voice } = await setup({ timeoutMs: 800 });
+      voice.faults.push({ closeAfterStop, closeAfterEof });
+      const pcm = Buffer.from([1, 2, 3, 4]);
+      await device.voiceStart();
+      await device.voiceStreamPcm(pcm);
+      await device.voiceStop();
+      const session = voice.sessions[0]!;
+      expect(Buffer.concat(session.pcm)).toEqual(pcm);
+      expect(session.closeAcknowledged).toBe(true);
+      if (closeAfterEof) expect(session.receivedEof).toBe(true);
+      expect(session.errors).toEqual([]);
+      expect(remote.state.recording).toBe(false);
+      expectVoiceTransitions(remote.state.voiceTransitions);
+      await device.voiceStart();
+      await device.voiceStop();
+      expectVoiceTransitions(remote.state.voiceTransitions, 2);
+      expect(voice.violations).toEqual([]);
+    },
+  );
+
+  it.each(["stop", "disconnect"] as const)(
+    "cancels streaming during %s when WS close acknowledgement requires HTTP stop and TLS EOF",
+    async (operation) => {
+      const { device, remote, voice } = await setup({ timeoutMs: 800 });
+      let firstAudio!: () => void;
+      const receivedAudio = new Promise<void>((resolve) => {
+        firstAudio = resolve;
+      });
+      voice.faults.push({ closeAfterStop: true, closeAfterEof: true, onFirstAudio: firstAudio });
+      await device.voiceStart();
+      const streaming = device.voiceStreamPcm(new Uint8Array(320000)).then(
+        () => "success",
+        () => "canceled",
+      );
+      await receivedAudio;
+      if (operation === "stop") await device.voiceStop();
+      else await device.disconnect();
+      expect(await streaming).toBe("canceled");
+      const session = voice.sessions[0]!;
+      const frames = session.pcm.length;
+      await delay(120);
+      expect(session.pcm).toHaveLength(frames);
+      expect(frames).toBeLessThan(100);
+      expect(session.closeAcknowledged).toBe(true);
+      expect(session.receivedEof).toBe(true);
+      expect(session.errors).toEqual([]);
+      expect(remote.state.recording).toBe(false);
+      expectVoiceTransitions(remote.state.voiceTransitions);
+      expect(voice.violations).toEqual([]);
+    },
+  );
 
   it("does not burst overdue PCM quanta after the event loop stalls", async () => {
     const { device, remote, voice } = await setup();
@@ -81,7 +151,7 @@ describe("owned native Alexa voice against independent HTTP/WSS receiver", () =>
     // preceding frame's audio duration; this does not pin a particular chunk size.
     expect(gaps.every((gap, index) => gap >= session.pcm[index]!.length / 32 / 2)).toBe(true);
     expect(session.errors).toEqual([]);
-    expect(remote.state.voiceTransitions).toEqual(["start", "wss", "close", "stop"]);
+    expectVoiceTransitions(remote.state.voiceTransitions);
     expect(remote.state.recording).toBe(false);
     expect(session.closed).toBe(true);
   }, 10000);
@@ -117,16 +187,7 @@ describe("owned native Alexa voice against independent HTTP/WSS receiver", () =>
     await device.voiceStreamPcm(Buffer.from([7, 8, 9, 10]));
     await device.voiceStop();
     expect(Buffer.concat(voice.sessions[1]!.pcm)).toEqual(Buffer.from([7, 8, 9, 10]));
-    expect(remote.state.voiceTransitions).toEqual([
-      "start",
-      "wss",
-      "close",
-      "stop",
-      "start",
-      "wss",
-      "close",
-      "stop",
-    ]);
+    expectVoiceTransitions(remote.state.voiceTransitions, 2);
     expect(remote.state.recording).toBe(false);
     expect(voice.violations).toEqual([]);
   }, 8000);
@@ -226,7 +287,7 @@ describe("owned native Alexa voice against independent HTTP/WSS receiver", () =>
       expect(voice.sessions[0]!.closed).toBe(true);
       expect(voice.sessions[0]!.errors).toEqual([]);
       expect(voice.violations).toEqual([]);
-      expect(remote.state.voiceTransitions).toEqual(["start", "wss", "close", "stop"]);
+      expectVoiceTransitions(remote.state.voiceTransitions);
       expect(remote.state.recording).toBe(false);
     },
   );
@@ -281,7 +342,7 @@ describe("owned native Alexa voice against independent HTTP/WSS receiver", () =>
       expect(voice.sessions[0]!.closed).toBe(true);
       expect(voice.sessions[0]!.errors).toEqual([]);
       expect(voice.violations).toEqual([]);
-      expect(remote.state.voiceTransitions).toEqual(["start", "wss", "close", "stop"]);
+      expectVoiceTransitions(remote.state.voiceTransitions);
       expect(remote.state.recording).toBe(false);
     },
   );
@@ -370,15 +431,28 @@ describe("owned native Alexa voice against independent HTTP/WSS receiver", () =>
     expect(remote.state.recording).toBe(false);
   });
 
+  it("still rejects a missing close acknowledgement after a successful HTTP stop", async () => {
+    const { device, remote, voice } = await setup({ timeoutMs: 250 });
+    voice.faults.push({ ignoreClose: true });
+    await device.voiceStart();
+    await expect(device.voiceStop()).rejects.toMatchObject({ code: "timeout" });
+    expect(remote.state.recording).toBe(false);
+    expect(voice.sessions[0]!.closeAcknowledged).toBe(false);
+    await device.voiceStart();
+    await device.voiceStop();
+    expect(remote.state.recording).toBe(false);
+  });
+
   it("bounds ignored close and surfaces stop failure without leaking voice socket", async () => {
     const { device, remote, voice } = await setup({ timeoutMs: 250 });
     voice.faults.push({ ignoreClose: true });
     await device.voiceStart();
     remote.faults.push({ path: "/v1/FireTV/voiceCommand?action=stop", status: 500 });
     const start = performance.now();
-    await expect(device.voiceStop()).rejects.toThrow();
+    await expect(device.voiceStop()).rejects.toMatchObject({ code: "http", statusCode: 500 });
     expect(performance.now() - start).toBeLessThan(1500);
     expect(voice.sessions[0]!.closed).toBe(true);
+    await expect(device.voiceStart()).rejects.toThrow();
     // HTTP failure means receiver recording cannot be promised stopped; disconnect retries cleanup.
     await device.disconnect();
     expect(remote.state.recording).toBe(false);

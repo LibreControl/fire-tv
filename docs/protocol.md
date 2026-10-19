@@ -32,6 +32,17 @@ Accumulation is bounded, duplicate service targets are indexed once, and timers/
 The implementation can report a DNS target name when addresses are absent.
 Loopback destination/port and local bind-address overrides are available for real UDP fixture testing.
 
+In parallel, search SSDP at 239.255.255.250:1900 with `ST: urn:dial-multiscreen-org:service:dial:1`.
+Fetch candidate descriptions only from numeric HTTP URLs matching the UDP sender, without credentials or redirects.
+Accept manufacturer Amazon and model names beginning with AFT, decode the friendly name, and use the UDN UUID as identity when valid.
+These receivers use remote port 8080; the SSDP description port is not the remote port.
+Descriptor bodies are limited to 64 KiB, with at most 64 candidates and four concurrent requests.
+Each request has a 1.5-second deadline capped by the shared discovery deadline.
+DTD and custom entity declarations are rejected.
+Merge mDNS and DIAL results by host/remote-port endpoint.
+Discovery never activates a DIAL application or proves that the remote service is currently reachable.
+The powered user receiver was discovered this way with its TV off on 2026-10-19, despite no `_amzn-fireTv._tcp` advertisement.
+
 ## Remote requests
 
 Port 8080 by default.
@@ -51,7 +62,9 @@ Authenticated requests additionally carry `x-client-token`.
    This package accepts `visible`, `text`, `active`, or `shown` as active; `active` and `shown` remain compatibility assumptions rather than observations of that firmware.
 6. `POST /v1/FireTV?action=dpad_up|dpad_down|dpad_left|dpad_right|select` with `{ keyActionType: "keyDown" | "keyUp" }`.
    A complete press sends down followed by up within one serialized operation.
-7. `POST /v1/FireTV?action=home|back|menu` with an empty body.
+7. `POST /v1/FireTV?action=home|back|menu|power` with an empty body.
+   The `power` action is exposed as `powerToggle`; the user confirmed that it turned off the connected TV.
+   It is not a discrete on/off command, does not report TV power state, and must not be automatically retried.
 8. `POST /v1/FireTV/keyboard` with `{ text }` containing the complete Unicode string, only after an active keyboard check.
    The keyboard check and single write occupy one serialized operation; the client does not split characters or fall back to another endpoint.
    Cursor and composition effects are receiver/app-owned; this API guarantees neither appending nor replacing the existing field.
@@ -59,6 +72,9 @@ Authenticated requests additionally carry `x-client-token`.
 9. `POST /v1/media?action=play` with an empty body toggles playback; exposed as `playPause`, not distinct play or pause operations.
 10. `POST /v1/media?action=scan` with `{ direction: "forward" | "backward", durationInSeconds: "10", speed: "1" }`.
     Public scan duration is a positive finite number, serialized as a string.
+    The duration is a receiver hint, not a guaranteed bounded jump or automatic stop.
+    User hardware continued scanning forward after a duration of five seconds; Play/Pause stopped scanning and resumed playback.
+    The same receiver rejected a backward scan with HTTP 400; reverse support remains unverified.
 
 Command success accepts any 2xx response, including empty or non-JSON bodies.
 Data-bearing responses are validated as JSON objects with required field types.
@@ -88,7 +104,10 @@ Writes respect transport backpressure, and pacing rebases after delays rather th
 This quantum is a pacing choice, not a claimed firmware requirement.
 The buffer must remain unmodified until its returned promise settles.
 
-`voiceStop()` cancels start/stream work, closes WSS first, then sends empty-body authenticated `POST /v1/FireTV/voiceCommand?action=stop`.
+`voiceStop()` cancels start/stream work and initiates WSS close plus empty-body authenticated `POST /v1/FireTV/voiceCommand?action=stop` concurrently.
+The transport ends its TLS write side after the WebSocket close frame flushes, then waits for peer acknowledgment within the close deadline.
+This avoids waiting for a close acknowledgment while withholding the transport EOF or HTTP stop the receiver may require.
+Both shutdown operations settle before completion; HTTP stop failures retain uncertain recording ownership and take precedence over a transport-close error.
 Duplicate starts and idle stream/stop reject.
 Start/socket/stream failures attempt bounded cleanup; disconnect cancels voice and unrelated queued navigation work and permits reconnect.
 Transient stop failures surface sanitized errors and retain uncertain recording ownership for later explicit cleanup, with no automatic command retry.
@@ -102,8 +121,9 @@ The CLI reads/validates files before starting recording and cleans up on failure
 
 The fixture is a conversion of `google-tv/tests/fixtures/open-youtube.wav`: 40960 raw PCM bytes, 1.280 seconds, data offset 4096.
 Conversion used macOS `afconvert`, not a runtime dependency.
-The command name is inferred from its supplied filename, not independently transcribed.
-Synthetic HTTP/TLS-WebSocket fixtures verify protocol consumption, not Alexa recognition; no hardware voice response is claimed by this implementation description.
+The sample's filename suggests “open YouTube”; its words were not independently transcribed.
+On the user's receiver, streaming this sample visibly opened YouTube, as confirmed by the user.
+Synthetic HTTP/TLS-WebSocket fixtures verify protocol consumption independently of that hardware observation.
 
 ## DIAL
 

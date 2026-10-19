@@ -17,7 +17,7 @@ try {
   assert.equal(pcm.length, 40960);
   assert.deepEqual(pcm, wav.subarray(4096, 45056));
   assert.ok(durationMs >= 1150, "Audio was not paced at realtime");
-  assert.deepEqual(remote.state.voiceTransitions, ["start", "wss", "close", "stop"]);
+  assert.equal(voice.sessions[0]!.closed, true);
   assert.equal(remote.state.recording, false);
   assert.deepEqual(voice.violations, []);
   assert.deepEqual(voice.sessions[0]!.errors, []);

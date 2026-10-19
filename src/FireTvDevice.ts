@@ -308,7 +308,7 @@ export class FireTvDevice {
   }
 
   sendKey(key: FireTvKeyName): Promise<void> {
-    if (!isHeld(key) && !["home", "back", "menu", "playPause"].includes(key)) {
+    if (!isHeld(key) && !["home", "back", "menu", "playPause", "powerToggle"].includes(key)) {
       return Promise.reject(new FireTvError("Unsupported Fire TV key", "state"));
     }
     return this.enqueue(async (signal) => {
@@ -322,7 +322,9 @@ export class FireTvDevice {
         if (!signal.aborted) this.held = undefined;
       } else {
         await this.remote(
-          key === "playPause" ? "/v1/media?action=play" : `/v1/FireTV?action=${key}`,
+          key === "playPause"
+            ? "/v1/media?action=play"
+            : `/v1/FireTV?action=${key === "powerToggle" ? "power" : key}`,
           "POST",
           undefined,
           signal,

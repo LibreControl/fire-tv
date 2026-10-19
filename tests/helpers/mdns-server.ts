@@ -46,9 +46,10 @@ function txt(values: string[]) {
   );
 }
 
-export async function startMdnsServer(options: { silent?: boolean; saturated?: boolean } = {}) {
+export async function startMdnsServer(
+  options: { silent?: boolean; saturated?: boolean; remotePort?: number } = {},
+) {
   const socket = createSocket("udp4");
-  const queries: Buffer[] = [];
   const sendErrors: Error[] = [];
   const timers = new Set<ReturnType<typeof setTimeout>>();
   // PTR owner begins at offset 12, instance's suffix points back to that owner.
@@ -60,7 +61,11 @@ export async function startMdnsServer(options: { silent?: boolean; saturated?: b
     ),
   ]);
   const details = packet([
-    record(name(instance), 33, Buffer.concat([u16(0), u16(0), u16(18080), name(hostname)])),
+    record(
+      name(instance),
+      33,
+      Buffer.concat([u16(0), u16(0), u16(options.remotePort ?? 18080), name(hostname)]),
+    ),
     record(name(instance), 16, txt(["id=synthetic-serial", "model=AFTMA08C15", "flag"])),
   ]);
   const address = packet([record(name(hostname), 1, Buffer.from([127, 0, 0, 1]))]);
@@ -93,7 +98,8 @@ export async function startMdnsServer(options: { silent?: boolean; saturated?: b
     name(service),
   ]);
   socket.on("message", (message, remote) => {
-    queries.push(Buffer.from(message));
+    // Existing mDNS-only tests direct SSDP here too, never onto the real LAN.
+    if (message.toString("ascii", 0, 8) === "M-SEARCH") return;
     if (options.silent) return;
     // Intentionally malformed before/between valid split replies; duplicate announcements.
     const packets = options.saturated
@@ -114,10 +120,11 @@ export async function startMdnsServer(options: { silent?: boolean; saturated?: b
   });
   await new Promise<void>((resolve) => socket.bind(0, "127.0.0.1", resolve));
   return {
-    queries,
     options: {
       mdnsAddress: "127.0.0.1",
       mdnsPort: (socket.address() as AddressInfo).port,
+      ssdpAddress: "127.0.0.1",
+      ssdpPort: (socket.address() as AddressInfo).port,
       timeoutMs: 150,
       networkInterfaces: ["127.0.0.1"],
     },
